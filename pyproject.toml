@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "lotus-vision"
+version = "0.1.0"
+description = "Visual QA agent that tests your app the way real users see it"
+requires-python = ">=3.9"
+dependencies = [
+    "anthropic>=0.43.0",
+    "playwright>=1.40.0",
+]
+
+[project.scripts]
+lotus-vision = "lotus_vision.cli:main"

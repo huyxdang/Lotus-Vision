@@ -1,0 +1,107 @@
+name: Lotus Vision QA
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  visual-qa:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+
+    # Users configure these to match their project
+    env:
+      # Option A: Preview URL (Vercel, Netlify, etc.)
+      # Set PREVIEW_URL in repo secrets if using preview deploys.
+      #
+      # Option B: Start app locally in CI
+      # Set APP_START_CMD (e.g., "npm run dev") and APP_PORT (e.g., "3000")
+      # in repo variables. The workflow will start your app and wait for it.
+      APP_START_CMD: ${{ vars.APP_START_CMD || '' }}
+      APP_PORT: ${{ vars.APP_PORT || '3000' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node (if needed)
+        if: env.APP_START_CMD != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install app dependencies
+        if: env.APP_START_CMD != ''
+        run: |
+          if [ -f package-lock.json ]; then npm ci;
+          elif [ -f yarn.lock ]; then yarn install --frozen-lockfile;
+          elif [ -f pnpm-lock.yaml ]; then npm i -g pnpm && pnpm install --frozen-lockfile;
+          fi
+
+      - name: Install Lotus Vision
+        run: |
+          pip install -e .
+          pip install playwright
+          playwright install chromium --with-deps
+
+      - name: Start app and determine URL
+        id: app
+        run: |
+          if [ -n "${{ secrets.PREVIEW_URL }}" ]; then
+            echo "url=${{ secrets.PREVIEW_URL }}" >> "$GITHUB_OUTPUT"
+            echo "Using preview URL: ${{ secrets.PREVIEW_URL }}"
+          elif [ -n "$APP_START_CMD" ]; then
+            echo "Starting app with: $APP_START_CMD"
+            $APP_START_CMD &
+            APP_PID=$!
+            echo "pid=$APP_PID" >> "$GITHUB_OUTPUT"
+
+            # Wait for the app to be ready (up to 60s)
+            for i in $(seq 1 60); do
+              if curl -s "http://localhost:$APP_PORT" > /dev/null 2>&1; then
+                echo "App is ready on port $APP_PORT"
+                break
+              fi
+              if [ $i -eq 60 ]; then
+                echo "Timed out waiting for app on port $APP_PORT"
+                exit 1
+              fi
+              sleep 1
+            done
+
+            echo "url=http://localhost:$APP_PORT" >> "$GITHUB_OUTPUT"
+          else
+            echo "No PREVIEW_URL or APP_START_CMD configured."
+            echo "Set PREVIEW_URL secret or APP_START_CMD variable in your repo."
+            exit 1
+          fi
+
+      - name: Run Lotus Vision
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python -m lotus_vision.ci \
+            --url "${{ steps.app.outputs.url }}" \
+            --personas default elderly colorblind \
+            --output findings.json
+
+      - name: Post PR Comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f findings.json ]; then
+            python -m lotus_vision.report \
+              --findings findings.json \
+              --repo "${{ github.repository }}" \
+              --pr "${{ github.event.pull_request.number }}"
+          fi
+
+      - name: Stop app
+        if: always() && steps.app.outputs.pid
+        run: kill ${{ steps.app.outputs.pid }} || true
